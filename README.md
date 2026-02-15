@@ -88,7 +88,9 @@ This repository is intended strictly for:
 
 It is not intended for production deployment.
 
-## References
+## Acknowledgements & References
+
+This project draws inspiration from and reuses ideas from the following resources:
 
 - [NanoGPT](https://github.com/karpathy/nanoGPT)
 - [LLaMA explained - By Umar Jamil](https://www.youtube.com/watch?v=Mn_9W1nCFLo)
