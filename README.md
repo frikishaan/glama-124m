@@ -25,20 +25,13 @@ I have added the following improvements to the original architecture:
 ## Training Setup
 
 - **Total tokens trained**: ~3B
-
 - **Optimizer**: AdamW
-
 - **Learning rate scheduler**: Cosine decay
-
 - **Total training steps**: ~15K
-
 - **Hardware**: Single A100 (40GB)
-
 - **Training time**: ~6 hours
-
 - **Throughput**: ~170k tokens/second
-
-- **Estimated Model FLOPs**: ~48
+- **Estimated Model FLOPs utilization**: ~48%
 
 FLOPs were calculated using the implementation from [NanoGPT](https://github.com/karpathy/nanoGPT/blob/master/model.py#L289).
 
