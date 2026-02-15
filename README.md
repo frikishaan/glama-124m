@@ -19,8 +19,8 @@ The configuration is comparable to GPT-2 Small / LLaMA-style models:
 
 I have added the following improvements to the original architecture:
 
-- **RoPE (Rotary Positional Embeddings)** instead of learned positional embeddings
-- **RMSNorm** instead of LayerNorm
+- **RoPE (Rotary Positional Embeddings)** instead of learned positional embeddings to encode relative positional information and improve extrapolation to longer contexts.
+- **RMSNorm** instead of LayerNorm to simplify normalization while maintaining training stability with lower computational overhead.
 
 ## Training Setup
 
