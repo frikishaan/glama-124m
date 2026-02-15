@@ -70,12 +70,15 @@ python train.py
 
 ## Results
 
-| Metric | Value |
-| --- | --- |
-| Train loss | 2.9 |
-| Validation loss | 2.7 |
-| Perplexity | 16 |
-| Hellaswag score | 28% |
+| Metric | Value | Original |
+| --- | --- | --- |
+| Train loss | 2.9 | ~2.57  |
+| Validation loss | 2.7 | ~3.09 |
+| Perplexity | 16 | 10-20 |
+| Hellaswag score | 27.5% | 29.4% |
+
+
+_Note: The "Original" values are taken from community-reported benchmarks and public reproductions, not directly from the original paper. Differences may arise due to dataset, tokenizer, evaluation setup, and training details._
 
 ## Purpose of This Project
 
