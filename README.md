@@ -68,6 +68,10 @@ python prepare_dataset.py
 python train.py
 ```
 
+### Generation
+
+Use `generate.py` or `generate_with_cache.py` to test your model. Make sure to replace the model path in the files before running.
+
 ## Results
 
 | Metric | Value | Original |
