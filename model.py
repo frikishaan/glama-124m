@@ -93,11 +93,25 @@ class CausalSelfAttention(nn.Module):
         self.out_proj = nn.Linear(config.emb_dim, config.emb_dim, bias=False)
         self.dropout = nn.Dropout(config.dropout)
 
-    def forward(self, x: Tensor, freq: Tensor, block_mask: BlockMask):
+        self.register_buffer("cache_k", None, persistent=False)
+        self.register_buffer("cache_v", None, persistent=False)
+
+    def reset_kv_cache(self):
+        self.cache_k  = None
+        self.cache_v = None
+
+    def forward(
+        self, 
+        x: Tensor, 
+        freq: Tensor, 
+        block_mask: BlockMask, 
+        use_cache: bool = False,
+        start_pos: int = 0
+    ):
         batch, seq_len, _ = x.shape
 
-        cos = freq[0][:seq_len].to(x.device)
-        sin = freq[1][:seq_len].to(x.device)
+        cos = freq[0][start_pos: start_pos + seq_len].to(x.device)
+        sin = freq[1][start_pos: start_pos + seq_len].to(x.device)
 
         # (batch, seq_len, emb_dim) -> (batch, seq_len, emb_dim)
         query = self.wq(x)
@@ -118,19 +132,37 @@ class CausalSelfAttention(nn.Module):
         key = key.transpose(1, 2)
         value = value.transpose(1, 2)
 
-        # (batch, h, seq_len, d_k) -> (batch, h, seq_len, d_k)
-        attn = flex_attention(
-            query, key, value,
-            block_mask=block_mask
-        )
-        # if flex_attention not supported, fallback to SDPA
-        # also need to create block mask manually
-        # attn = torch.nn.functional.scaled_dot_product_attention(
-        #     query, key, value, 
-        #     attn_mask=None, 
-        #     dropout_p=self.config.dropout if self.training else 0, 
-        #     is_causal=True
-        # )
+        if use_cache:
+            if self.cache_k is None:
+                # pre-allocate tensors of max seq length
+                self.cache_k = torch.zeros(batch, self.n_head, self.config.seq_len, self.dk, device=x.device, dtype=key.dtype)
+                self.cache_v = torch.zeros(batch, self.n_head, self.config.seq_len, self.dk, device=x.device, dtype=value.dtype)
+
+            self.cache_k[:, :, start_pos:start_pos+seq_len] = key
+            self.cache_v[:, :, start_pos:start_pos+seq_len] = value
+
+            key = self.cache_k[:, :, :start_pos+seq_len]
+            value = self.cache_v[:, :, :start_pos+seq_len]
+
+            attn = F.scaled_dot_product_attention(
+                query, key, value,
+                is_causal=(seq_len > 1),
+            )
+        else:
+            # (batch, h, seq_len, d_k) -> (batch, h, seq_len, d_k)
+            attn = flex_attention(
+                query, key, value,
+                block_mask=block_mask
+            )
+
+            # if flex_attention not supported, fallback to SDPA
+            # also need to create block mask manually
+            # attn = torch.nn.functional.scaled_dot_product_attention(
+            #     query, key, value, 
+            #     attn_mask=None, 
+            #     dropout_p=self.config.dropout if self.training else 0, 
+            #     is_causal=True
+            # )
 
         y = attn.transpose(1, 2).contiguous().view(batch, seq_len, self.n_head * self.dk)
 
@@ -162,8 +194,15 @@ class Block(nn.Module):
         self.ffn_norm = RMSNorm(config.emb_dim, config.rms_norm_eps)
         self.ffn = FeedForward(config)
 
-    def forward(self, x: Tensor, freq: Tensor, block_mask: BlockMask):
-        x = x + self.attention(self.attn_norm(x), freq, block_mask)
+    def forward(
+        self, 
+        x: Tensor, 
+        freq: Tensor, 
+        block_mask: BlockMask,
+        use_cache: bool = False,
+        start_pos: int = 0
+    ):
+        x = x + self.attention(self.attn_norm(x), freq, block_mask, use_cache, start_pos)
         x = x + self.ffn(self.ffn_norm(x))
         return x
 
@@ -285,7 +324,14 @@ class GLaMA(nn.Module):
             device=device,
         )
 
-    def forward(self, x: Tensor, target: Tensor|None = None, doc_ids: Tensor|None = None, output_hidden_state: bool = False) -> tuple[Tensor, Optional[Tensor]]:
+    def forward(
+        self, x: Tensor, 
+        target: Tensor|None = None, 
+        doc_ids: Tensor|None = None, 
+        output_hidden_state: bool = False,
+        use_cache: bool = False,
+        start_pos: int = 0
+    ) -> tuple[Tensor, Optional[Tensor]]:
 
         # Create doc_ids if not provided
         if doc_ids is None:
@@ -296,7 +342,7 @@ class GLaMA(nn.Module):
         x = self.in_emb(x)
         
         for block in self.blocks:
-            x = block(x, (self.cos, self.sin), block_mask)
+            x = block(x, (self.cos, self.sin), block_mask, use_cache, start_pos)
         x = self.norm(x)
 
         # output hidden state for classification
@@ -315,10 +361,9 @@ class GLaMA(nn.Module):
         return logits, loss
 
     @torch.no_grad()
-    def generate(self, idx: Tensor, max_new_tokens: int, temperature: float = 1.0, top_k: int = None) -> Tensor:
+    def generate(self, idx: Tensor, max_new_tokens: int, temperature: float = 1.0, top_k: int | None = None) -> Tensor:
         """
         Generate text by autoregressively calling the model
-        Taken from - https://github.com/karpathy/nanoGPT/blob/master/model.py
         """
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
@@ -340,5 +385,51 @@ class GLaMA(nn.Module):
 
             if idx_next == self.config.eos_token_id:
                 break
+
+        return idx
+
+    def reset_kv_cache(self):
+        for block in self.blocks:
+            block.attention.reset_kv_cache()
+
+
+    @torch.no_grad()
+    def generate_with_cache(
+        self, 
+        idx: Tensor, 
+        max_new_tokens: int, 
+        temperature: float = 1.0, 
+        top_k: int | None = None
+    ) -> Tensor:
+    
+        self.reset_kv_cache()
+        start_pos = 0
+
+        # if the sequence context is growing too long we must crop it at block_size
+        idx_cond = idx if idx.size(1) <= self.config.seq_len else idx[:, -self.config.seq_len:]
+        logits, _ = self(idx_cond, use_cache=True, start_pos=start_pos)
+
+        for _ in range(max_new_tokens):
+            
+            # pluck the logits at the final step and scale by desired temperature
+            logits = logits[:, -1, :] / temperature
+            # optionally crop the logits to only the top k options
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float('Inf')
+            # apply softmax to convert logits to (normalized) probabilities
+            probs = F.softmax(logits, dim=-1)
+            # sample from the distribution
+            idx_next = torch.multinomial(probs, num_samples=1)
+            # append sampled index to the running sequence and continue
+            idx = torch.cat((idx, idx_next), dim=1)
+
+            if idx_next == self.config.eos_token_id:
+                break
+
+            start_pos = idx.size(1) - 1
+
+            # forward the model to get the logits for the index in the sequence
+            logits, _ = self(idx_next, use_cache=True, start_pos=start_pos)
 
         return idx
